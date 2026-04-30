@@ -465,6 +465,14 @@ export async function resolveSource(link_id: string): Promise<SourceData> {
   console.log("📡 Response status (links view):", res.status);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
+  // Detect Cloudflare HTML response before trying to parse JSON
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('text/html')) {
+    const rawHtml = await res.text();
+    console.error("⚠️  GOT CLOUDFLARE BLOCK PAGE instead of JSON");
+    throw new Error("Cloudflare blocked this request. Use residential proxy for deployment.");
+  }
+
   const json = await res.json();
   console.log("📦 Raw links view response:", json);
 
@@ -477,14 +485,35 @@ export async function resolveSource(link_id: string): Promise<SourceData> {
 
   if (!embedData) throw new Error("Embed decryption failed");
 
-  const embed_url = embedData.url || "";
-  console.log("🎬 Embed URL:", embed_url);
+  const embedUrl = embedData.url || "";
+  console.log("🎬 Embed URL:", embedUrl);
 
-  if (!embed_url) throw new Error("No embed URL found");
+  if (!embedUrl) throw new Error("No embed URL found");
 
-  // 🚀 Extract final sources directly
-  const extracted = await MegaUp.extract(embed_url);
-  console.log("🎥 Extracted media:", extracted);
+  // Always set embed_url to the HTML page
+  let embed_url = embedUrl;
+
+  // 🚀 Extract final sources from the real iframe src
+  let extracted;
+  try {
+    // Fetch the embed page to get the real iframe src for extraction
+    const embedRes = await fetch(embedUrl, { headers: HEADERS });
+    if (!embedRes.ok) throw new Error(`Failed to fetch embed page: ${embedRes.status}`);
+    const html = await embedRes.text();
+    const $ = cheerio.load(html);
+    const realIframeSrc = $('iframe').attr('src');
+    if (!realIframeSrc) throw new Error("No iframe src found in embed page");
+
+    extracted = await MegaUp.extract(realIframeSrc);
+    console.log("🎥 Extracted media from real iframe src:", extracted);
+  } catch (error) {
+    console.log("⚠️ M3U8 extraction failed, falling back to iframe:", error);
+    extracted = {
+      sources: [{ url: embedUrl, isM3U8: false }],
+      subtitles: [],
+      download: "",
+    };
+  }
 
   const output: SourceData = {
     embed_url,
